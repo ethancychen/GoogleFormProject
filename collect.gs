@@ -1,105 +1,188 @@
 function collect() {
 
-  var teachersheetFilename = "teachersheet";
-  var ss = SpreadsheetApp.openById(DriveApp.getFilesByName(teachersheetFilename).next().getId());
+  var scriptProperties = PropertiesService.getScriptProperties();
+  Logger.log(scriptProperties.getProperties());
   
-  var sheets = ss.getSheets();
+  var startTime= (new Date()).getTime();
+  scriptProperties.setProperty("startTime", startTime);
   
-  var combinedss = ss.insertSheet("combined");
+  var MAX_RUNNING_TIME = parseInt(scriptProperties.getProperty("MAX_RUNNING_TIME"));
+  var NUM_TEACHER = parseInt(scriptProperties.getProperty("NUM_TEACHER"));
   
-  var boolhadrecordScoreAndCol = false;
-  for(var i=0;i<sheets.length;i++){
-    if(sheets[i].getName()=='teaformUrlsheet')continue;
-    if(!boolhadrecordScoreAndCol){
-      var titles = sheets[i].getRange(1,1,1,sheets[i].getLastColumn()).getValues()[0];
-      var levelOneColinSheet = getAllIndexes(titles,"Level 1");
-      var tempform = FormApp.openByUrl(sheets[i].getFormUrl());
-      var chcekboxoptNums = tempform.getItems(FormApp.ItemType.CHECKBOX).map(function(x){return x.asCheckboxItem().getChoices().length});
-      boolhadrecordScoreAndCol=true;
+  if(scriptProperties.getProperty("collectfinish")=="true")return;
+  var resultSpreadsheet = SpreadsheetApp.openById(scriptProperties.getProperty("RESULT_SPREADSHEET_ID"));
+  var UrlSheet = resultSpreadsheet.getSheetByName(scriptProperties.getProperty("URL_SHEET_NAME"));
+  
+  var UrlSheetHeaders = UrlSheet.getRange(1,1,1,UrlSheet.getLastColumn()).getValues()[0];
+  var teaformUrls = UrlSheet.getRange(2,UrlSheetHeaders.indexOf("EditUrl")+1,UrlSheet.getLastRow()-1,1).getValues().map(function(x){return x[0]});
 
-    }
-    var formname = FormApp.openByUrl(sheets[i].getFormUrl()).getTitle();
-    
-    //sheet.getRange(row, column, numRows, numColumns)
-    var recordrownum = sheets[i].getLastRow()-1;// num of last row with content
-    var recordcolnum = sheets[i].getLastColumn();
-    if(recordrownum==0)continue;
-    var rangeToCopy = sheets[i].getRange(2, 1, recordrownum,recordcolnum);
-    var combinedssLastrownum = combinedss.getLastRow();
-    
-    combinedss.getRange(combinedssLastrownum+1,1,recordrownum,1).setValue(formname);
-    rangeToCopy.copyTo(combinedss.getRange(combinedssLastrownum+1,2));
+  
+  //--------dump the res in teaforms and stdform into a single tempform
+  if(scriptProperties.getProperty("MERGE_FORM_ID")!="null"){
+    var mergeform = FormApp.openById(scriptProperties.getProperty("MERGE_FORM_ID"));
+  }
+  else{
+    var oneteaformfile = DriveApp.getFileById(FormApp.openByUrl(teaformUrls[0]).getId());
+    var tempformfile = DriveApp.getFileById(oneteaformfile.getId()).makeCopy("mergeform", oneteaformfile.getParents().next());
+    scriptProperties.setProperty("MERGE_FORM_ID", tempformfile.getId());
+    var mergeform = FormApp.openById(tempformfile.getId());
     
   }
   
-  
-  //------score caculation------
-  
-  var checkboxAns = combinedss.getRange(1,levelOneColinSheet[0]+2,combinedss.getLastRow(),levelOneColinSheet.length*5).getValues();
-  var scores = [];
-  for(var row=0;row<checkboxAns.length;row++){
-    var scoreforperson = [];
-    for(var item=0;item<levelOneColinSheet.length;item++){      
-      var scoreforitem = 0;
-      for(var level=0;level<5;level++){
-   
-        var selectedOpt = checkboxAns[row][item*5+level].toString().split(",");
-        
-        if(selectedOpt.length==chcekboxoptNums[item*5+level]){
-          scoreforitem=scoreforitem+1;
-        } else {
-          if(selectedOpt=="")scoreforitem+=0;
-          else if(selectedOpt.length>=1 && selectedOpt!="")scoreforitem+=0.5;
-          break;      
+  //------insert form res: could take time
+  if(scriptProperties.getProperty("finmergeform")!="true"){
+    var curmergeteaform = parseInt(scriptProperties.getProperty("curmergeteaform"));
+    var curmergeteaformres = parseInt(scriptProperties.getProperty("curmergeteaformres"));
+    
+    for(var i = curmergeteaform; i < teaformUrls.length; i++) {
+      var oneteaformresponses = FormApp.openByUrl(teaformUrls[i]).getResponses();
+      
+      for(var j = curmergeteaformres;j<oneteaformresponses.length;j++){
+        var onetempresponse = mergeform.createResponse();
+        var oneteaformresponseItems = oneteaformresponses[j].getItemResponses();
+        for(var k = 0;k<oneteaformresponseItems.length;k++){
+          onetempresponse.withItemResponse(oneteaformresponseItems[k]);
+        }
+        onetempresponse.submit();
+        if((new Date()).getTime()-startTime>MAX_RUNNING_TIME){
+          setTrigger(["finmergeform","curmergeteaform","curmergeteaformres"],[false,i,j+1],"collect");
+          return;
         }
       }
-      if(scoreforitem==0)scoreforitem="";
-      scoreforperson.push(scoreforitem);
+      curmergeteaformres=0;
     }
-    scores.push(scoreforperson);
+    mergeform.setDestination(FormApp.DestinationType.SPREADSHEET, resultSpreadsheet.getId());
+    SpreadsheetApp.flush();
+    setTrigger(["finmergeform"],[true],"collect");
+    return;
   }
-  combinedss.getRange(1,combinedss.getLastColumn()+1,combinedss.getLastRow(),scores[0].length).setValues(scores);
   
-  
-  //-------insert first row as header----
-  combinedss.insertRowBefore(1);
-  var scorestrs = [];
-  for(var i= 0;i<scores[0].length;i++)scorestrs[i] = "score "+(i+1)+"";
-  titles[titles.indexOf("姓名")] = "老師姓名";
-  var headers = ["學生姓名"].concat(titles).concat(scorestrs);
-  combinedss.getRange(1,1,1, combinedss.getLastColumn()).setValues([headers]);
-  
-  
-  // adjust std name and teacher name
-  var stdnames = combinedss.getRange(2, headers.indexOf("學生姓名")+1,combinedss.getLastRow()-1,1).getValues();
-  var teanames = combinedss.getRange(2, headers.indexOf("老師姓名")+1,combinedss.getLastRow()-1,1).getValues();
 
-  for(var i=0;i<stdnames.length;i++){
-    if(stdnames[i][0].toString().indexOf("老師版問卷 - ")!=-1)stdnames[i][0] = stdnames[i][0].toString().replace(/老師版問卷 - /g,'');
-    else{
-      stdnames[i]=teanames[i];
-      teanames[i] = ["null"];
+  //------start to make ResultSheet
+  if(scriptProperties.getProperty("ResultSheetSet")!="true"){
+    var sheets = resultSpreadsheet.getSheets();
+    for(var i=0;i<sheets.length;i++){
+      if(sheets[i].getFormUrl()!=null){
+        var ResultSheet = sheets[i];
+        SpreadsheetApp.flush();
+        ResultSheet.setName(scriptProperties.getProperty("ResultSheetName"));
+        mergeform.removeDestination();
+        scriptProperties.setProperty("ResultSheetSet", true);
+        break;
+      }
     }
   }
-  headers = combinedss.getRange(1,1,1,combinedss.getLastColumn()).getValues().map(function(x){return x})[0];
-  combinedss.getRange(2, headers.indexOf("學生姓名")+1,combinedss.getLastRow()-1,1).setValues(stdnames);
-  combinedss.getRange(2, headers.indexOf("老師姓名")+1,combinedss.getLastRow()-1,1).setValues(teanames);
+  else{
+    var ResultSheet = resultSpreadsheet.getSheetByName(scriptProperties.getProperty("ResultSheetName"));
+  }
   
-  var vitalcol = ["老師姓名","學生姓名","職級","日期"].concat(scorestrs);
   
-  // adjust col postion
-  for(var i=0;i<vitalcol.length;i++){
-    headers = combinedss.getRange(1,1,1,combinedss.getLastColumn()).getValues().map(function(x){return x})[0];
-    try{
-      combinedss.moveColumns(combinedss.getRange(1, headers.indexOf(vitalcol[i])+1,combinedss.getLastRow(),1), i+1);
+  if((new Date()).getTime()-startTime>MAX_RUNNING_TIME){
+    setTrigger([],[],"collect");
+    return;
+  }
+  
+  var headers = ResultSheet.getRange(1,1, 1, ResultSheet.getLastColumn()).getValues()[0];
+  
+  //------score caculation
+
+  //Logger.log((new Date()).getTime()-startTime);
+  if(scriptProperties.getProperty("ScoreCalDone")!="true"){
+    var levelOneColinSheet = getAllIndexes(headers,"Level 1");
+    Logger.log("levelOneInd = "+levelOneColinSheet);
+    var chcekboxoptNums = mergeform.getItems(FormApp.ItemType.CHECKBOX).map(function(x){return x.asCheckboxItem().getChoices().length});
+    
+    var checkboxAns = ResultSheet.getRange(2,levelOneColinSheet[0]+1,ResultSheet.getLastRow()-1,levelOneColinSheet.length*5).getValues();
+    var scores = [];
+    for(var row=0;row<checkboxAns.length;row++){
+      var scoreforperson = [];
+      for(var item=0;item<levelOneColinSheet.length;item++){      
+        var scoreforitem = 0;
+        for(var level=0;level<5;level++){
+          
+          var selectedOpt = checkboxAns[row][item*5+level].toString().split(",");
+          
+          if(selectedOpt.length==chcekboxoptNums[item*5+level]){
+            scoreforitem=scoreforitem+1;
+          } else {
+            if(selectedOpt=="")scoreforitem+=0;
+            else if(selectedOpt.length>=1 && selectedOpt!="")scoreforitem+=0.5;
+            break;
+          }
+        }
+        if(scoreforitem==0)scoreforitem="";
+        scoreforperson.push(scoreforitem);
+      }
+      scores.push(scoreforperson);
     }
-    catch(e){};
+    ResultSheet.getRange(2,ResultSheet.getLastColumn()+1,ResultSheet.getLastRow()-1,scores[0].length).setValues(scores);
+    scriptProperties.setProperty("ScoreCalDone", true);
+  }
+  
+  if((new Date()).getTime()-startTime>MAX_RUNNING_TIME){
+    setTrigger([],[],"collect");
+    return;
+  }
+  
+  //------collect tea std name
+  
+  if(scriptProperties.getProperty("StdTeaNameSet")!="true"){
+    var resnames = ResultSheet.getRange(2, headers.indexOf("姓名")+1,ResultSheet.getLastRow()-1,1).getValues().map(function(x){return x[0]});
+    var formtitles = [];
+    for(var i=0;i<teaformUrls.length;i++){
+      var oneformtitle = FormApp.openByUrl(teaformUrls[i]).getTitle();
+      for(var j=0;j<FormApp.openByUrl(teaformUrls[i]).getResponses().length;j++)formtitles.push(oneformtitle);
+    }
+    
+    for(var i = 0;i<resnames.length;i++){
+      if(formtitles[i].search(scriptProperties.getProperty("TEACHER_FORM_PREFIX"))!=-1){
+        formtitles[i] = formtitles[i].replace(scriptProperties.getProperty("TEACHER_FORM_PREFIX"),"");
+      }
+      else{
+        formtitles[i] = resnames[i];
+        resnames[i] = "null";
+      }
+    }
+    ResultSheet.getRange(2, headers.indexOf("姓名")+1,ResultSheet.getLastRow()-1,1).setValues([].concat(formtitles.map(function(x){return [x]})));
+    ResultSheet.insertColumnBefore(1);
+    ResultSheet.getRange(2,1,ResultSheet.getLastRow()-1,1).setValues([].concat(resnames.map(function(x){return [x]})));
+    scriptProperties.setProperty("StdTeaNameSet",true);
+  }
+  
+  
+  if((new Date()).getTime()-startTime>MAX_RUNNING_TIME){
+    setTrigger([],[],WAITING_TIME,"collect");
+    return;
+  }
+  //-----adjust header
+  headers = ResultSheet.getRange(1,1,1,ResultSheet.getLastColumn()).getValues()[0];
+  if(scriptProperties.getProperty("headeradjust")!=true){
+    headers[headers.indexOf("姓名")]=scriptProperties.getProperty("STD_NAME_HEADER");
+    headers[0] = scriptProperties.getProperty("TEACHER_NAME_HEADER");
+    var scorestrs = [];
+    var counter = 1;
+    for(var i= 0;i<headers.length;i++){
+      if(headers[i]==""){
+        headers[i]=scriptProperties.getProperty("SCORE_HEADER_PREFIX")+counter;
+        scorestrs.push(scriptProperties.getProperty("SCORE_HEADER_PREFIX")+counter);
+        counter++;
+      }
+    } 
+    ResultSheet.getRange(1,1,1,ResultSheet.getLastColumn()).setValues([headers]);
+    
+    headers = ResultSheet.getRange(1,1,1,ResultSheet.getLastColumn()).getValues()[0];
+    //Logger.log(headers);
+    var vitalcol = [scriptProperties.getProperty("TEACHER_NAME_HEADER"),scriptProperties.getProperty("STD_NAME_HEADER"),"職級","日期"].concat(scorestrs);
+    for(var i=0;i<vitalcol.length;i++){
+      try{
+        ResultSheet.moveColumns(ResultSheet.getRange(1, headers.indexOf(vitalcol[i])+1,ResultSheet.getLastRow(),1), i+1);
+        headers = ResultSheet.getRange(1,1,1,ResultSheet.getLastColumn()).getValues()[0];
+      }
+      catch(e){};
+    }
   }
   
 }
-
-//var fileId = DriveApp.getFileById(id);
-//DriveApp.removeFile(fileId);
 
 function getAllIndexes(arr, val) {
   var indexes = [];
